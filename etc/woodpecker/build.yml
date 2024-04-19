@@ -1,7 +1,8 @@
-branches: master
+when:
+  branch: master
 
 # NOTE: "stable" tcc is too old and fails at linking. instead fetching a recent known working commit.
-pipeline:
+steps:
   build:
     image: alpine
     environment:
@@ -9,7 +10,7 @@ pipeline:
     commands: |
       apk add --no-cache \
           imlib2 imlib2-dev xorgproto \
-          libxft libxft-dev libexif libexif-dev giflib giflib-dev libwebp libwebp-dev \
+          libxft libxft-dev libexif libexif-dev \
           gcc clang llvm llvm-dev build-base wget ca-certificates bc >/dev/null
       wget "https://github.com/TinyCC/tinycc/archive/$TCC_SHA.tar.gz" >/dev/null
       tar xzf "$TCC_SHA.tar.gz" >/dev/null
@@ -26,5 +27,5 @@ pipeline:
       # full-build with gcc and clang #
       build "1" "full"
       # ensure minimal-build works without opt deps installed
-      apk del libxft libxft-dev libexif libexif-dev giflib giflib-dev libwebp libwebp-dev >/dev/null
+      apk del libxft libxft-dev libexif libexif-dev >/dev/null
       build "0" "minimal"

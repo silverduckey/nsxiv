@@ -22,6 +22,7 @@
 #include "commands.h"
 #include "config.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <locale.h>
@@ -69,8 +70,9 @@ int alternate;
 int markcnt;
 int markidx;
 int prefix;
-bool title_dirty;
 const XButtonEvent *xbutton_ev;
+
+static void autoreload(void);
 
 static bool extprefix;
 static bool resized = false;
@@ -91,6 +93,7 @@ static struct {
 	struct timeval when;
 	bool active;
 } timeouts[] = {
+	{ autoreload   },
 	{ redraw       },
 	{ reset_cursor },
 	{ slideshow    },
@@ -269,6 +272,18 @@ static bool check_timeouts(int *t)
 	return tmin > 0;
 }
 
+static void autoreload(void)
+{
+	if (img.autoreload_pending) {
+		img_close(&img, true);
+		/* load_image() sets autoreload_pending to false */
+		load_image(fileidx);
+		redraw();
+	} else {
+		assert(!"unreachable");
+	}
+}
+
 static void kill_close(pid_t pid, int *fd)
 {
 	if (fd != NULL && *fd != -1) {
@@ -300,7 +315,7 @@ static void open_title(void)
 	char *argv[8];
 	char w[12] = "", h[12] = "", z[12] = "", fidx[12], fcnt[12];
 
-	if (wintitle.f.err || !title_dirty)
+	if (wintitle.f.err)
 		return;
 
 	close_title();
@@ -315,7 +330,6 @@ static void open_title(void)
 	               fidx, fcnt, w, h, z, NULL);
 	if ((wintitle.pid = spawn(&wintitle.fd, NULL, argv)) > 0)
 		fcntl(wintitle.fd, F_SETFL, O_NONBLOCK);
-	title_dirty = false;
 }
 
 void close_info(void)
@@ -367,10 +381,13 @@ void load_image(int new)
 
 	if (win.xwin != None)
 		win_set_cursor(&win, CURSOR_WATCH);
+	reset_timeout(autoreload);
 	reset_timeout(slideshow);
 
-	if (new != current)
+	if (new != current) {
 		alternate = current;
+		img.autoreload_pending = false;
+	}
 
 	img_close(&img, false);
 	while (!img_load(&img, &files[new])) {
@@ -383,10 +400,7 @@ void load_image(int new)
 	files[new].flags &= ~FF_WARN;
 	fileidx = current = new;
 
-	close_info();
-	open_info();
 	arl_add(&arl, files[fileidx].path);
-	title_dirty = true;
 
 	if (img.multi.cnt > 0 && img.multi.animate)
 		set_timeout(animate, img.multi.frames[img.multi.sel].delay, true);
@@ -424,9 +438,33 @@ static void update_info(void)
 	const char *mark;
 	win_bar_t *l = &win.bar.l, *r = &win.bar.r;
 
+	static struct {
+		const char *filepath;
+		int fileidx;
+		float zoom;
+		appmode_t mode;
+	} prev;
+
+	if (prev.fileidx != fileidx || prev.mode != mode ||
+	    (prev.filepath == NULL || !STREQ(prev.filepath, files[fileidx].path)))
+	{
+		close_info();
+		open_info();
+		open_title();
+	} else if (mode == MODE_IMAGE && prev.zoom != img.zoom) {
+		open_title();
+	}
+
 	/* update bar contents */
 	if (win.bar.h == 0 || extprefix)
 		return;
+
+	free((char *)prev.filepath);
+	prev.filepath = estrdup(files[fileidx].path);
+	prev.fileidx = fileidx;
+	prev.zoom = img.zoom;
+	prev.mode = mode;
+
 	for (fw = 0, i = filecnt; i > 0; fw++, i /= 10)
 		;
 	mark = files[fileidx].flags & FF_MARK ? "* " : "";
@@ -501,7 +539,6 @@ void redraw(void)
 		tns_render(&tns);
 	}
 	update_info();
-	open_title();
 	win_draw(&win);
 	reset_timeout(redraw);
 	reset_cursor();
@@ -564,12 +601,10 @@ void handle_key_handler(bool init)
 	if (win.bar.h == 0)
 		return;
 	if (init) {
-		close_info();
-		snprintf(win.bar.l.buf, win.bar.l.size,
+		snprintf(win.bar.r.buf, win.bar.r.size,
 		         "Getting key handler input (%s to abort)...",
 		         XKeysymToString(KEYHANDLER_ABORT));
 	} else { /* abort */
-		open_info();
 		update_info();
 	}
 	win_draw(&win);
@@ -598,8 +633,7 @@ static bool run_key_handler(const char *key, unsigned int mask)
 	if (key == NULL)
 		return false;
 
-	close_info();
-	strncpy(win.bar.l.buf, "Running key handler...", win.bar.l.size);
+	strncpy(win.bar.r.buf, "Running key handler...", win.bar.r.size);
 	win_draw(&win);
 	win_set_cursor(&win, CURSOR_WATCH);
 	setenv("NSXIV_USING_NULL", options->using_null ? "1" : "0", 1);
@@ -651,7 +685,7 @@ static bool run_key_handler(const char *key, unsigned int mask)
 		img_close(&img, true);
 		load_image(fileidx);
 	} else {
-		open_info();
+		update_info();
 	}
 	free(oldst);
 	reset_cursor();
@@ -735,7 +769,6 @@ static void run(void)
 	enum { FD_X, FD_INFO, FD_TITLE, FD_ARL, FD_CNT };
 	struct pollfd pfd[FD_CNT];
 	int timeout = 0;
-	const struct timespec ten_ms = { 0, 10000000 };
 	bool discard, init_thumb, load_thumb, to_set;
 	XEvent ev, nextev;
 
@@ -775,14 +808,9 @@ static void run(void)
 					read_info();
 				if (pfd[FD_TITLE].revents & POLLIN)
 					read_title();
-				if (pfd[FD_ARL].revents & POLLIN) {
-					if (arl_handle(&arl)) {
-						/* when too fast, imlib2 can't load the image */
-						nanosleep(&ten_ms, NULL);
-						img_close(&img, true);
-						load_image(fileidx);
-						redraw();
-					}
+				if ((pfd[FD_ARL].revents & POLLIN) && arl_handle(&arl)) {
+					img.autoreload_pending = true;
+					set_timeout(autoreload, TO_AUTORELOAD, true);
 				}
 			}
 			continue;
@@ -906,6 +934,23 @@ int main(int argc, char *argv[])
 
 	filecnt = fileidx;
 	fileidx = options->startnum < filecnt ? options->startnum : 0;
+
+	if (options->background_cache && !options->private_mode) {
+		pid_t ppid = getpid(); /* to check if parent is still alive or not */
+		switch (fork()) {
+		case 0:
+			tns_init(&tns, files, &filecnt, &fileidx, NULL);
+			while (filecnt > 0 && getppid() == ppid) {
+				tns_load(&tns, filecnt - 1, false, true);
+				remove_file(filecnt - 1, true);
+			}
+			exit(0);
+			break;
+		case -1:
+			error(0, errno, "fork failed");
+			break;
+		}
+	}
 
 	win_init(&win);
 	img_init(&img, &win);

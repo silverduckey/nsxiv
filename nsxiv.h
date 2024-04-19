@@ -107,6 +107,7 @@ typedef struct {
 
 /* timeouts in milliseconds: */
 enum {
+	TO_AUTORELOAD    = 128,
 	TO_REDRAW_RESIZE = 75,
 	TO_REDRAW_THUMBS = 200,
 	TO_CURSOR_HIDE   = 1200,
@@ -204,6 +205,7 @@ struct img {
 	bool dirty;
 	bool anti_alias;
 	bool alpha_layer;
+	bool autoreload_pending;
 
 	struct {
 		bool on;
@@ -215,6 +217,7 @@ struct img {
 
 void img_init(img_t*, win_t*);
 bool img_load(img_t*, const fileinfo_t*);
+CLEANUP void img_free(Imlib_Image, bool);
 CLEANUP void img_close(img_t*, bool);
 void img_render(img_t*);
 bool img_fit_win(img_t*, scalemode_t);
@@ -271,6 +274,7 @@ struct opt {
 	bool thumb_mode;
 	bool clean_cache;
 	bool private_mode;
+	bool background_cache;
 };
 
 extern const opt_t *options;
@@ -465,6 +469,5 @@ extern int alternate;
 extern int markcnt;
 extern int markidx;
 extern int prefix;
-extern bool title_dirty;
 
 #endif /* NSXIV_H */

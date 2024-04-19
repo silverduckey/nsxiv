@@ -33,18 +33,6 @@
 #include <libexif/exif-data.h>
 #endif
 
-#if HAVE_LIBGIF && !HAVE_IMLIB2_MULTI_FRAME
-#include <gif_lib.h>
-enum { DEF_GIF_DELAY = 75 };
-#endif
-
-#if HAVE_LIBWEBP && !HAVE_IMLIB2_MULTI_FRAME
-#include <stdio.h>
-#include <webp/decode.h>
-#include <webp/demux.h>
-enum { DEF_WEBP_DELAY = 75 };
-#endif
-
 #if HAVE_IMLIB2_MULTI_FRAME
 enum { DEF_ANIM_DELAY = 75 };
 #endif
@@ -87,6 +75,7 @@ void img_init(img_t *img, win_t *win)
 	img->dirty = false;
 	img->anti_alias = options->anti_alias;
 	img->alpha_layer = options->alpha_layer;
+	img->autoreload_pending = false;
 	img->multi.cap = img->multi.cnt = 0;
 	img->multi.animate = options->animate;
 	img->multi.framedelay = options->framerate > 0 ? 1000 / options->framerate : 0;
@@ -143,297 +132,6 @@ void exif_auto_orientate(const fileinfo_t *file)
 }
 #endif
 
-#if HAVE_LIBGIF || HAVE_LIBWEBP || HAVE_IMLIB2_MULTI_FRAME
-static void img_multiframe_context_set(img_t *img)
-{
-	if (img->multi.cnt > 1) {
-		imlib_context_set_image(img->im);
-		imlib_free_image();
-		img->im = img->multi.frames[0].im;
-	} else if (img->multi.cnt == 1) {
-		imlib_context_set_image(img->multi.frames[0].im);
-		imlib_free_image();
-		img->multi.cnt = 0;
-	}
-
-	imlib_context_set_image(img->im);
-}
-#endif
-
-#if (HAVE_LIBGIF || HAVE_LIBWEBP) && !HAVE_IMLIB2_MULTI_FRAME
-static void img_multiframe_deprecation_notice(void)
-{
-	static bool warned;
-	if (!warned) {
-		error(0, 0, "\n"
-		      "################################################################\n"
-		      "#                      DEPRECATION NOTICE                      #\n"
-		      "################################################################\n"
-		      "# Internal multi-frame gif and webp loaders are deprecated and #\n"
-		      "# will be removed soon. Please upgrade to Imlib2 v1.8.0 for    #\n"
-		      "# multi-frame/animated image support.                          #\n"
-		      "################################################################");
-		warned = true;
-	}
-}
-#endif
-
-#if HAVE_LIBGIF && !HAVE_IMLIB2_MULTI_FRAME
-static bool img_load_gif(img_t *img, const fileinfo_t *file)
-{
-	GifFileType *gif;
-	GifRowType *rows = NULL;
-	GifRecordType rec;
-	ColorMapObject *cmap;
-	uint32_t bgpixel = 0, *data, *ptr;
-	uint32_t *prev_frame = NULL;
-	Imlib_Image im;
-	int i, j, bg, r, g, b;
-	int x, y, w, h, sw, sh;
-	int px, py, pw, ph;
-	int intoffset[] = { 0, 4, 2, 1 };
-	int intjump[] = { 8, 8, 4, 2 };
-	int transp = -1;
-	unsigned int disposal = 0, prev_disposal = 0;
-	unsigned int delay = 0;
-	bool err = false;
-	multi_img_t *m = &img->multi;
-
-	img_multiframe_deprecation_notice();
-
-#if defined(GIFLIB_MAJOR) && GIFLIB_MAJOR >= 5
-	gif = DGifOpenFileName(file->path, NULL);
-#else
-	gif = DGifOpenFileName(file->path);
-#endif
-	if (gif == NULL) {
-		error(0, 0, "%s: Error opening gif image", file->name);
-		return false;
-	}
-	bg = gif->SBackGroundColor;
-	sw = gif->SWidth;
-	sh = gif->SHeight;
-	px = py = pw = ph = 0;
-
-	m->length = m->cnt = m->sel = 0;
-	do {
-		if (DGifGetRecordType(gif, &rec) == GIF_ERROR) {
-			err = true;
-			break;
-		}
-		if (rec == EXTENSION_RECORD_TYPE) {
-			int ext_code;
-			GifByteType *ext = NULL;
-
-			DGifGetExtension(gif, &ext_code, &ext);
-			while (ext) {
-				if (ext_code == GRAPHICS_EXT_FUNC_CODE) {
-					if (ext[1] & 1)
-						transp = (int)ext[4];
-					else
-						transp = -1;
-
-					delay = 10 * ((unsigned int)ext[3] << 8 | (unsigned int)ext[2]);
-					disposal = (unsigned int)ext[1] >> 2 & 0x7;
-				}
-				ext = NULL;
-				DGifGetExtensionNext(gif, &ext);
-			}
-		} else if (rec == IMAGE_DESC_RECORD_TYPE) {
-			if (DGifGetImageDesc(gif) == GIF_ERROR) {
-				err = true;
-				break;
-			}
-			x = gif->Image.Left;
-			y = gif->Image.Top;
-			w = gif->Image.Width;
-			h = gif->Image.Height;
-
-			rows = emalloc(h * sizeof(*rows));
-			for (i = 0; i < h; i++)
-				rows[i] = emalloc(w * sizeof(*rows[i]));
-			if (gif->Image.Interlace) {
-				for (i = 0; i < 4; i++) {
-					for (j = intoffset[i]; j < h; j += intjump[i])
-						DGifGetLine(gif, rows[j], w);
-				}
-			} else {
-				for (i = 0; i < h; i++)
-					DGifGetLine(gif, rows[i], w);
-			}
-
-			ptr = data = emalloc(sw * sh * sizeof(*data));
-			cmap = gif->Image.ColorMap ? gif->Image.ColorMap : gif->SColorMap;
-			/* if bg > cmap->ColorCount, it is transparent black already */
-			if (cmap && bg >= 0 && bg < cmap->ColorCount) {
-				r = cmap->Colors[bg].Red;
-				g = cmap->Colors[bg].Green;
-				b = cmap->Colors[bg].Blue;
-				bgpixel = 0x00ffffff & (r << 16 | g << 8 | b);
-			}
-
-			for (i = 0; i < sh; i++) {
-				for (j = 0; j < sw; j++) {
-					if (i < y || i >= y + h || j < x || j >= x + w ||
-					    rows[i - y][j - x] == transp)
-					{
-						if (prev_frame != NULL &&
-						    (prev_disposal != 2 || i < py || i >= py + ph ||
-						     j < px || j >= px + pw))
-						{
-							*ptr = prev_frame[i * sw + j];
-						} else {
-							*ptr = bgpixel;
-						}
-					} else {
-						assert(cmap != NULL);
-						r = cmap->Colors[rows[i - y][j - x]].Red;
-						g = cmap->Colors[rows[i - y][j - x]].Green;
-						b = cmap->Colors[rows[i - y][j - x]].Blue;
-						*ptr = 0xffu << 24 | r << 16 | g << 8 | b;
-					}
-					ptr++;
-				}
-			}
-
-			im = imlib_create_image_using_copied_data(sw, sh, data);
-
-			for (i = 0; i < h; i++)
-				free(rows[i]);
-			free(rows);
-			free(data);
-
-			if (im == NULL) {
-				err = true;
-				break;
-			}
-
-			imlib_context_set_image(im);
-			imlib_image_set_format("gif");
-			if (transp >= 0)
-				imlib_image_set_has_alpha(1);
-
-			if (disposal != 3)
-				prev_frame = imlib_image_get_data_for_reading_only();
-			prev_disposal = disposal;
-			px = x, py = y, pw = w, ph = h;
-
-			assert(m->cnt <= m->cap);
-			if (m->cnt == m->cap) {
-				m->cap = m->cap == 0 ? 16 : (m->cap * 2);
-				m->frames = erealloc(m->frames, m->cap * sizeof(*m->frames));
-			}
-			m->frames[m->cnt].im = im;
-			delay = m->framedelay > 0 ? m->framedelay : delay;
-			m->frames[m->cnt].delay = delay > 0 ? delay : DEF_GIF_DELAY;
-			m->length += m->frames[m->cnt].delay;
-			m->cnt++;
-		}
-	} while (rec != TERMINATE_RECORD_TYPE);
-
-#if defined(GIFLIB_MAJOR) && GIFLIB_MAJOR >= 5 && GIFLIB_MINOR >= 1
-	DGifCloseFile(gif, NULL);
-#else
-	DGifCloseFile(gif);
-#endif
-
-	if (err && (file->flags & FF_WARN))
-		error(0, 0, "%s: Corrupted gif file", file->name);
-
-	img_multiframe_context_set(img);
-
-	return !err;
-}
-#endif /* HAVE_LIBGIF */
-
-#if HAVE_LIBWEBP && !HAVE_IMLIB2_MULTI_FRAME
-static bool img_load_webp(img_t *img, const fileinfo_t *file)
-{
-	FILE *webp_file;
-	WebPData data;
-	Imlib_Image im = NULL;
-	struct WebPAnimDecoderOptions opts;
-	WebPAnimDecoder *dec = NULL;
-	struct WebPAnimInfo info;
-	unsigned char *buf = NULL, *bytes = NULL;
-	int ts;
-	const WebPDemuxer *demux;
-	WebPIterator iter;
-	unsigned long flags;
-	unsigned int delay;
-	bool err = false;
-	multi_img_t *m = &img->multi;
-
-	img_multiframe_deprecation_notice();
-
-	if ((webp_file = fopen(file->path, "rb")) == NULL) {
-		error(0, errno, "%s: Error opening webp image", file->name);
-		return false;
-	}
-	fseek(webp_file, 0L, SEEK_END);
-	data.size = ftell(webp_file);
-	rewind(webp_file);
-	bytes = emalloc(data.size);
-	if ((err = fread(bytes, 1, data.size, webp_file) != data.size)) {
-		error(0, 0, "%s: Error reading webp image", file->name);
-		goto fail;
-	}
-	data.bytes = bytes;
-
-	/* Setup the WebP Animation Decoder */
-	if ((err = !WebPAnimDecoderOptionsInit(&opts))) {
-		error(0, 0, "%s: WebP library version mismatch", file->name);
-		goto fail;
-	}
-	opts.color_mode = MODE_BGRA;
-	/* NOTE: Multi-threaded decoding may cause problems on some system */
-	opts.use_threads = true;
-	dec = WebPAnimDecoderNew(&data, &opts);
-	if ((err = (dec == NULL) || !WebPAnimDecoderGetInfo(dec, &info))) {
-		error(0, 0, "%s: WebP parsing or memory error (file is corrupt?)", file->name);
-		goto fail;
-	}
-	demux = WebPAnimDecoderGetDemuxer(dec);
-
-	/* Get global information for the image */
-	flags = WebPDemuxGetI(demux, WEBP_FF_FORMAT_FLAGS);
-	img->w = WebPDemuxGetI(demux, WEBP_FF_CANVAS_WIDTH);
-	img->h = WebPDemuxGetI(demux, WEBP_FF_CANVAS_HEIGHT);
-
-	if (info.frame_count > m->cap) {
-		m->cap = info.frame_count;
-		m->frames = erealloc(m->frames, m->cap * sizeof(*m->frames));
-	}
-
-	/* Load and decode frames (also works on images with only 1 frame) */
-	m->length = m->cnt = m->sel = 0;
-	while (WebPAnimDecoderGetNext(dec, &buf, &ts)) {
-		im = imlib_create_image_using_copied_data(info.canvas_width, info.canvas_height,
-		                                          (uint32_t *)buf);
-		imlib_context_set_image(im);
-		imlib_image_set_format("webp");
-		/* Get an iterator of this frame - used for frame info (duration, etc.) */
-		WebPDemuxGetFrame(demux, m->cnt + 1, &iter);
-		imlib_image_set_has_alpha((flags & ALPHA_FLAG) == ALPHA_FLAG);
-		/* Store info for this frame */
-		m->frames[m->cnt].im = im;
-		delay = iter.duration > 0 ? iter.duration : DEF_WEBP_DELAY;
-		m->frames[m->cnt].delay = delay;
-		m->length += m->frames[m->cnt].delay;
-		m->cnt++;
-	}
-	WebPDemuxReleaseIterator(&iter);
-
-	img_multiframe_context_set(img);
-fail:
-	if (dec != NULL)
-		WebPAnimDecoderDelete(dec);
-	free(bytes);
-	fclose(webp_file);
-	return !err;
-}
-#endif /* HAVE_LIBWEBP */
-
 #if HAVE_IMLIB2_MULTI_FRAME
 static void img_area_clear(int x, int y, int w, int h)
 {
@@ -489,22 +187,24 @@ static bool img_load_multiframe(img_t *img, const fileinfo_t *file)
 		bool has_alpha;
 
 		imlib_context_set_image(m->cnt < 1 ? blank : m->frames[m->cnt - 1].im);
-		if ((canvas = imlib_clone_image()) == NULL ||
-		    (frame = imlib_load_image_frame(file->path, n)) == NULL)
+		canvas = imlib_clone_image();
+		if ((frame = imlib_load_image_frame(file->path, n)) != NULL) {
+			imlib_context_set_image(frame);
+			imlib_image_set_changes_on_disk(); /* see img_load() for rationale */
+			imlib_image_get_frame_info(&finfo);
+		}
+		/* NOTE: the underlying file can end up changing during load.
+		 * so check if frame_count, w, h are all still the same or not.
+		 */
+		if (canvas == NULL || frame == NULL || finfo.frame_count != (int)fcnt ||
+		    finfo.canvas_w != img->w || finfo.canvas_h != img->h)
 		{
-			if (canvas != NULL) {
-				imlib_context_set_image(canvas);
-				imlib_free_image();
-			}
+			img_free(frame, false);
+			img_free(canvas, false);
 			error(0, 0, "%s: failed to load frame %d", file->name, n);
 			break;
 		}
 
-		imlib_context_set_image(frame);
-		imlib_image_set_changes_on_disk(); /* see img_load() for rationale */
-		imlib_image_get_frame_info(&finfo);
-		assert(finfo.frame_count == (int)fcnt);
-		assert(finfo.canvas_w == img->w && finfo.canvas_h == img->h);
 		sx = finfo.frame_x;
 		sy = finfo.frame_y;
 		sw = finfo.frame_w;
@@ -537,13 +237,19 @@ static bool img_load_multiframe(img_t *img, const fileinfo_t *file)
 		m->frames[m->cnt].delay = finfo.frame_delay ? finfo.frame_delay : DEF_ANIM_DELAY;
 		m->length += m->frames[m->cnt].delay;
 		m->cnt++;
-		imlib_context_set_image(frame);
-		imlib_free_image();
+		img_free(frame, false);
 	}
-	imlib_context_set_image(blank);
-	imlib_free_image();
-	img_multiframe_context_set(img);
+	img_free(blank, false);
 	imlib_context_set_color_modifier(img->cmod); /* restore cmod */
+
+	if (m->cnt > 1) {
+		img_free(img->im, false);
+		img->im = m->frames[0].im;
+	} else if (m->cnt == 1) {
+		img_free(m->frames[0].im, false);
+		m->cnt = 0;
+	}
+	imlib_context_set_image(img->im);
 	return m->cnt > 0;
 }
 #endif /* HAVE_IMLIB2_MULTI_FRAME */
@@ -596,20 +302,13 @@ bool img_load(img_t *img, const fileinfo_t *file)
 	animated = img_load_multiframe(img, file);
 #endif
 
-	if ((fmt = imlib_image_format()) != NULL) { /* NOLINT: fmt might be unused, not worth fixing */
-#if HAVE_LIBGIF && !HAVE_IMLIB2_MULTI_FRAME
-		if (STREQ(fmt, "gif"))
-			img_load_gif(img, file);
-#endif
-#if HAVE_LIBWEBP && !HAVE_IMLIB2_MULTI_FRAME
-		if (STREQ(fmt, "webp"))
-			img_load_webp(img, file);
-#endif
+	(void)fmt; /* maybe unused */
 #if HAVE_LIBEXIF && defined(IMLIB2_VERSION)
+	if ((fmt = imlib_image_format()) != NULL) {
 		if (!STREQ(fmt, "jpeg") && !STREQ(fmt, "jpg"))
 			exif_auto_orientate(file);
-#endif
 	}
+#endif
 	/* for animated images, we want the _canvas_ width/height, which
 	 * img_load_multiframe() sets already.
 	 */
@@ -623,21 +322,41 @@ bool img_load(img_t *img, const fileinfo_t *file)
 	return true;
 }
 
+CLEANUP void img_free(Imlib_Image im, bool decache)
+{
+	if (im != NULL) {
+		imlib_context_set_image(im);
+		decache ? imlib_free_image_and_decache() : imlib_free_image();
+	}
+}
+
 CLEANUP void img_close(img_t *img, bool decache)
 {
 	unsigned int i;
-	void (*free_img)(void) = decache ? imlib_free_image_and_decache : imlib_free_image;
 
 	if (img->multi.cnt > 0) {
-		for (i = 0; i < img->multi.cnt; i++) {
-			imlib_context_set_image(img->multi.frames[i].im);
-			free_img();
-		}
+		for (i = 0; i < img->multi.cnt; i++)
+			img_free(img->multi.frames[i].im, decache);
+		/* NOTE: the above only decaches the "composed frames",
+		 * and not the "raw frame" that's associated with the file.
+		 * which leads to issues like: https://codeberg.org/nsxiv/nsxiv/issues/456
+		 */
+#if HAVE_IMLIB2_MULTI_FRAME
+	#if IMLIB2_VERSION >= IMLIB2_VERSION_(1, 12, 0)
+		if (decache)
+			imlib_image_decache_file(files[fileidx].path);
+	#else /* UPGRADE: Imlib2 v1.12.0: remove this hack */
+		/* HACK: try to reload all the frames and forcefully decache them
+		 * if imlib_image_decache_file() isn't available.
+		 */
+		for (i = 0; decache && i < img->multi.cnt; i++)
+			img_free(imlib_load_image_frame(files[fileidx].path, i + 1), true);
+	#endif
+#endif
 		img->multi.cnt = 0;
 		img->im = NULL;
 	} else if (img->im != NULL) {
-		imlib_context_set_image(img->im);
-		free_img();
+		img_free(img->im, decache);
 		img->im = NULL;
 	}
 }
@@ -698,7 +417,7 @@ static bool img_fit(img_t *img)
 
 	if (ABS(img->zoom - z) > 1.0 / MAX(img->w, img->h)) {
 		img->zoom = z;
-		img->dirty = title_dirty = true;
+		img->dirty = true;
 		return true;
 	} else {
 		return false;
@@ -833,7 +552,7 @@ bool img_zoom_to(img_t *img, float z)
 		img->y = y - (y - img->y) * z / img->zoom;
 		img->zoom = z;
 		img->scalemode = SCALE_ZOOM;
-		img->dirty = img->checkpan = title_dirty = true;
+		img->dirty = img->checkpan = true;
 		return true;
 	} else {
 		return false;
