@@ -3,8 +3,7 @@
 :CUSTOM_ID: installation
 :END:
 #+begin_example
-git clone https://gitlab.com/vudangxyz/nsxiv.git .nsxiv
+git clone https://github.com/silverduckey/nsxiv.git .nsxiv
 cd .nsxiv
-make
-sudo make install-all
+sudo make clean install-all
 #+end_example
