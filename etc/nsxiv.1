@@ -37,12 +37,21 @@ manager.
 .BI "\-A, \-\-framerate " FRAMERATE
 Play animations with a constant frame rate set to
 .IR FRAMERATE .
+If
+.I FRAMERATE
+is set to 0 then animation playback is disabled.
 .TP
 .B "\-a, \-\-animate"
 Play animations of multi-frame images.
 .TP
-.B "\-b, \-\-no\-bar"
-Do not show statusbar at the bottom of the window.
+.B "\-b"
+Do not show statusbar.
+.TP
+.B "\-\-bar, \-\-no\-bar"
+Enables or disables statusbar.
+.B "\-\-no\-bar"
+is equivalent to
+.BR "\-b" .
 .TP
 .B "\-c, \-\-clean\-cache"
 Remove all orphaned cache files from the thumbnail cache directory and exit.
@@ -67,8 +76,9 @@ Print brief usage information to standard output and exit.
 .B "\-i, \-\-stdin"
 Read names of files to open from standard input. Also done if FILE is `-'.
 .TP
-.BI "\-N, \-\-class " NAME
-Set the resource name (WM_CLASS) of nsxiv's X window to NAME.
+.BI "\-N, \-\-name " NAME
+Set the window name (i.e the "Instance" name of WM_CLASS as described in ICCCM)
+to NAME.
 .TP
 .BI "\-n, \-\-start\-at " NUM
 Start at picture number NUM.
@@ -99,8 +109,8 @@ may be a floating-point number.
 Set scale mode according to MODE character. Supported modes are: [d]own,
 [f]it, [F]ill, [w]idth, [h]eight.
 .TP
-.B "\-t, \-\-thumbnail"
-Start in thumbnail mode.
+.BR "\-t, \-\-thumbnail" [=no]
+Start in thumbnail mode. The long option accepts an optional "no" to disable it.
 .TP
 .B "\-v, \-\-version"
 Print version information to standard output and exit.
@@ -124,6 +134,14 @@ as an argument, disables it instead.
 Enables checkerboard background for alpha layer, when given
 .I no
 as an argument, disables it instead.
+.TP
+.BI "\-\-cache\-allow, \-\-cache\-deny " "CACHE\-PATHS"
+List of directories to whitelist or blacklist for thumbnail caching.
+See
+.I "THUMBNAIL CACHING"
+section for more information on the argument format.
+These options are mutually exclusive, if they are specified more than once then
+only the final one takes effect.
 .SH KEYBOARD COMMANDS
 .SS General
 The following keyboard commands are available in both image and thumbnail modes:
@@ -559,6 +577,24 @@ afterwards inside the cache directory to remove empty subdirectories:
 .RS
 find . \-depth \-type d \-empty ! \-name '.' \-exec rmdir {} \\;
 .RE
+.P
+The option
+.BR "\-\-cache\-allow " or " \-\-cache\-deny"
+may be used to whitelists or blacklist certain directories from being cached.
+The argument is a
+.B :
+separated list of paths. A
+.B *
+at the beginning of the path indicates that path should be matched recursively.
+.P
+For example:
+.B \-\-cache\-allow \(dq/user/pictures:*/media/pictures\(dq
+whitelists \(dq/user/pictures\(dq directory non-recursively and \(dq/media/pictures\(dq
+directory recursively. Nothing outside these two directories will be cached.
+And
+.B \-\-cache\-deny \(dq*/secret\(dq
+will enable blacklist mode and will not cache anything inside \(dq/secret\(dq
+or it's subdirectories.
 .SH ORIGINAL AUTHOR
 .EX
 Bert Muennich          <ber.t at posteo.de>

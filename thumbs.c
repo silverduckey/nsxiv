@@ -43,7 +43,7 @@ static char *tns_cache_filepath(const char *filepath)
 	size_t len;
 	char *cfile = NULL;
 
-	assert(*filepath == '/' && "filepath should be result of realpath(3)");
+	assert(*filepath == '/' && "filepath must be result of realpath(3)");
 
 	if (strncmp(filepath, cache_dir, strlen(cache_dir)) != 0) {
 		/* don't cache images inside the cache directory! */
@@ -75,7 +75,26 @@ static Imlib_Image tns_cache_load(const char *filepath, bool *outdated)
 	return im;
 }
 
-static void tns_cache_write(Imlib_Image im, const char *filepath, bool force)
+static bool tns_cache_whitelisted(tns_t *tns, const char *filepath)
+{
+	ptrdiff_t i, dir_len = strrchr(filepath, '/') - filepath;
+	dir_len = MAX(dir_len, 1); /* account for "/file" */
+
+	if (tns->filters_cnt == 0)
+		return true; /* no cache list, cache everything */
+
+	for (i = 0; i < tns->filters_cnt; ++i) {
+		thumb_filter_t *f = tns->filters + i;
+		if ((f->recursive ? (dir_len >= f->len) : (dir_len == f->len)) &&
+		     memcmp(filepath, f->path, f->len) == 0)
+		{ /* in blacklist mode, finding a match means we shouldn't cache */
+			return tns->filters_is_blacklist ? false : true;
+		}
+	}
+	return tns->filters_is_blacklist; /* no match */
+}
+
+static void tns_cache_write(tns_t *tns, Imlib_Image im, const char *filepath, bool force)
 {
 	char *cfile, *dirend;
 	int tmpfd;
@@ -83,7 +102,7 @@ static void tns_cache_write(Imlib_Image im, const char *filepath, bool force)
 	struct utimbuf times;
 	Imlib_Load_Error err;
 
-	if (options->private_mode)
+	if (options->private_mode || !tns_cache_whitelisted(tns, filepath))
 		return;
 
 	if (stat(filepath, &fstats) < 0)
@@ -102,6 +121,7 @@ static void tns_cache_write(Imlib_Image im, const char *filepath, bool force)
 			imlib_context_set_image(im);
 			if (imlib_image_has_alpha()) {
 				imlib_image_set_format("png");
+				imlib_image_attach_data_value("compression", NULL, 8, NULL);
 			} else {
 				imlib_image_set_format("jpg");
 				imlib_image_attach_data_value("quality", NULL, 90, NULL);
@@ -167,6 +187,34 @@ void tns_init(tns_t *tns, fileinfo_t *tns_files, const int *cnt, int *sel, win_t
 	tns->zl = THUMB_SIZE;
 	tns_zoom(tns, 0);
 
+	tns->filters = NULL;
+	tns->filters_cnt = 0;
+	tns->filters_is_blacklist = options->tns_filters_is_blacklist;
+	if (options->tns_filters != NULL && options->tns_filters[0] != '\0') {
+		int allocated = 0;
+		char *save, *tok, *s = estrdup(options->tns_filters);
+		for (tok = strtok_r(s, ":", &save); tok != NULL;
+		     tok = strtok_r(NULL, ":", &save))
+		{
+			thumb_filter_t *f;
+			if (tns->filters_cnt == allocated) {
+				allocated = allocated > 0 ? (allocated * 2) : 4;
+				tns->filters = erealloc(tns->filters,
+				                        allocated * sizeof(*tns->filters));
+			}
+			f = tns->filters + tns->filters_cnt++;
+			f->recursive = *tok == '*';
+			f->path = realpath(tok + f->recursive, NULL);
+			if (f->path == NULL) {
+				error(EXIT_FAILURE, errno, "--cache-%s: `%s`",
+				      tns->filters_is_blacklist ? "deny" : "allow",
+				      tok + f->recursive);
+			}
+			f->len = strlen(f->path);
+		}
+		free(s);
+	}
+
 	if ((homedir = getenv("XDG_CACHE_HOME")) == NULL || homedir[0] == '\0') {
 		homedir = getenv("HOME");
 		dsuffix = "/.cache";
@@ -181,7 +229,7 @@ void tns_init(tns_t *tns, fileinfo_t *tns_files, const int *cnt, int *sel, win_t
 		memcpy(cache_tmpfile, cache_dir, len - 1);
 		cache_tmpfile_base = cache_tmpfile + len - 1;
 	} else {
-		error(0, 0, "Cache directory not found");
+		error(EXIT_FAILURE, 0, "Cache directory not found");
 	}
 }
 
@@ -195,6 +243,12 @@ CLEANUP void tns_free(tns_t *tns)
 		free(tns->thumbs);
 		tns->thumbs = NULL;
 	}
+
+	for (i = 0; i < tns->filters_cnt; ++i)
+		free((void *)tns->filters[i].path);
+	tns->filters_cnt = 0;
+	free(tns->filters);
+	tns->filters = NULL;
 
 	free(cache_dir);
 	cache_dir = NULL;
@@ -335,7 +389,7 @@ bool tns_load(tns_t *tns, int n, bool force, bool cache_only)
 		im = tns_scale_down(im, maxwh);
 		imlib_context_set_image(im);
 		if (imlib_image_get_width() == maxwh || imlib_image_get_height() == maxwh)
-			tns_cache_write(im, file->path, true);
+			tns_cache_write(tns, im, file->path, true);
 	}
 
 	if (cache_only) {
@@ -579,8 +633,10 @@ bool tns_zoom(tns_t *tns, int d)
 int tns_translate(tns_t *tns, int x, int y)
 {
 	int n;
+	int x_max = tns->x + tns->dim * tns->cols;
+	int y_max = tns->y + tns->dim * tns->rows;
 
-	if (x < tns->x || y < tns->y)
+	if (x < tns->x || y < tns->y || x > x_max || y > y_max)
 		return -1;
 
 	n = tns->first + (y - tns->y) / tns->dim * tns->cols +

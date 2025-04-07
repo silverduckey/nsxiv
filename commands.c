@@ -260,7 +260,7 @@ bool cg_dmenu_search(arg_t _)
 	ssize_t n;
 
 	snprintf(nsxiv_xid, sizeof nsxiv_xid, "0x%.8lX", win.xwin);
-	if (spawn(&rfd, &wfd, (char **)dmenu_cmd) < 0)
+	if (spawn(&rfd, &wfd, 0, (char **)dmenu_cmd) < 0)
 		return false;
 	for (i = 0; i < filecnt; ++i) {
 		dprintf(wfd, "%s\n", files[i].name);

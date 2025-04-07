@@ -70,6 +70,14 @@ static const bool ANTI_ALIAS = true;
  */
 static const bool ALPHA_LAYER = false;
 
+/* list of whitelisted/blacklisted directory for thumbnail cache
+ * (overwritten via --cache-{allow,deny} option).
+ * see THUMBNAIL CACHING section in nsxiv(1) manpage for more details.
+ */
+static const char TNS_FILTERS[] = "";
+/* set to true to treat `TNS_FILTERS` as a blacklist instead */
+static const bool TNS_FILTERS_IS_BLACKLIST = false;
+
 #endif
 #ifdef INCLUDE_THUMBS_CONFIG
 
@@ -109,9 +117,9 @@ static const keymap_t keys[] = {
 	{ 0,            XK_slash,         g_dmenu_search,       None },
 	{ ControlMask,  XK_h,             g_scroll_screen,      DIR_LEFT },
 	{ ControlMask,  XK_Left,          g_scroll_screen,      DIR_LEFT },
-	{ ControlMask,  XK_f,             g_scroll_screen,      DIR_DOWN },
+	{ ControlMask,  XK_j,             g_scroll_screen,      DIR_DOWN },
 	{ ControlMask,  XK_Down,          g_scroll_screen,      DIR_DOWN },
-	{ ControlMask,  XK_b,             g_scroll_screen,      DIR_UP },
+	{ ControlMask,  XK_k,             g_scroll_screen,      DIR_UP },
 	{ ControlMask,  XK_Up,            g_scroll_screen,      DIR_UP },
 	{ ControlMask,  XK_l,             g_scroll_screen,      DIR_RIGHT },
 	{ ControlMask,  XK_Right,         g_scroll_screen,      DIR_RIGHT },
