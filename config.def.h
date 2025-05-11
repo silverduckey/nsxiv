@@ -7,13 +7,13 @@ static const int WIN_HEIGHT = 600;
 /* colors and font can be overwritten via X resource properties.
  * See nsxiv(1), X(7) section Resources and xrdb(1) for more information.
  *                                      X resource            value (NULL == default) */
-static const char *WIN_BG[]   = { "Nsxiv.window.background",   "white" };
-static const char *WIN_FG[]   = { "Nsxiv.window.foreground",   "black" };
+static const char *WIN_BG[]   = { "Nsxiv.window.background",    NULL };
+static const char *WIN_FG[]   = { "Nsxiv.window.foreground",    NULL };
 static const char *MARK_FG[]  = { "Nsxiv.mark.foreground",      NULL };
 #if HAVE_LIBFONTS
 static const char *BAR_BG[]   = { "Nsxiv.bar.background",       NULL };
 static const char *BAR_FG[]   = { "Nsxiv.bar.foreground",       NULL };
-static const char *BAR_FONT[] = { "Nsxiv.bar.font",            "monospace-8" };
+static const char *BAR_FONT[] = { "Nsxiv.bar.font",             NULL };
 
 /* if true, statusbar appears on top of the window */
 static const bool TOP_STATUSBAR = false;
@@ -90,6 +90,11 @@ static const int THUMB_SIZE = 3;
 #endif
 #ifdef INCLUDE_MAPPINGS_CONFIG
 
+char nsxiv_xid[64]; /* will be set to nsxiv's xid when dmenu_search is invoked */
+const char *const dmenu_cmd[] = {
+	"dmenu", "-l", "16", "-w", nsxiv_xid, NULL
+};
+
 /* these modifiers will be used when processing keybindings */
 static const unsigned int USED_MODMASK = ShiftMask | ControlMask | Mod1Mask;
 
@@ -109,6 +114,7 @@ static const keymap_t keys[] = {
 	{ 0,            XK_G,             g_n_or_last,          None },
 	{ 0,            XK_r,             g_reload_image,       None },
 	{ 0,            XK_D,             g_remove_image,       None },
+	{ 0,            XK_slash,         g_dmenu_search,       None },
 	{ ControlMask,  XK_h,             g_scroll_screen,      DIR_LEFT },
 	{ ControlMask,  XK_Left,          g_scroll_screen,      DIR_LEFT },
 	{ ControlMask,  XK_j,             g_scroll_screen,      DIR_DOWN },
